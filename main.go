@@ -16,7 +16,7 @@ import (
 )
 
 var wg sync.WaitGroup
-var sem = make(chan struct{}, 48)
+var sem = make(chan int8, 64)
 
 // struct to hold required security.txt file fields.
 type Sdt struct {
@@ -48,9 +48,14 @@ func loadHosts(fileName string) []string {
 	return hosts
 }
 
+func choke() {
+	<-sem
+	wg.Done()
+}
+
 // checkHost - Check to see if /.well-known/security.txt is present.
-func checkHost(host string, transport *http.Transport) {
-	defer wg.Done()
+func checkHost(host string, transport *http.Transport, showAll *bool) {
+	defer choke()
 	path := "/.well-known/security.txt"
 
 	client := &http.Client{
@@ -62,7 +67,6 @@ func checkHost(host string, transport *http.Transport) {
 	if err != nil {
 		log.Println(err)
 		log.Println("----------------------------------")
-		<-sem
 		return
 	}
 
@@ -73,7 +77,6 @@ func checkHost(host string, transport *http.Transport) {
 	if err != nil {
 		log.Println(err)
 		log.Println("----------------------------------")
-		<-sem
 		return
 	}
 	defer getResp.Body.Close()
@@ -87,7 +90,6 @@ func checkHost(host string, transport *http.Transport) {
 				if err != nil {
 					log.Println(err)
 					log.Println("----------------------------------")
-					<-sem
 					return
 				}
 				cts := make([]string, 0)
@@ -115,7 +117,6 @@ func checkHost(host string, transport *http.Transport) {
 				if err := scanner.Err(); err != nil {
 					log.Println(err)
 					log.Println("----------------------------------")
-					<-sem
 					return
 				}
 
@@ -124,19 +125,24 @@ func checkHost(host string, transport *http.Transport) {
 					contacts: cts,
 					expires:  exp,
 				}
+
 				log.Printf("%v\n", string(body))
 				log.Println("----------------------------------")
-				fmt.Printf("%q\n", sdt)
-				<-sem
+
+				// Only output if it has more than 1 contact unless the user specified otherwise
+				if *showAll || len(sdt.contacts) > 0 {
+					fmt.Printf("%q\n", sdt)
+				}
+
 				return
 			}
 		}
 	}
-	<-sem
 }
 
 func main() {
 	var hosts = flag.String("hosts", "top.txt", "Plain text file containing a list of domains.")
+	var all = flag.Bool("all", false, "Output all security.txt files even if they contain no contacts")
 	var help = flag.Bool("help", false, "Show help.")
 
 	flag.Parse()
@@ -156,10 +162,9 @@ func main() {
 
 	for _, domain := range domains {
 		wg.Add(1)
+		sem <- 1
 
-		sem <- struct{}{}
-
-		go checkHost(domain, transport)
+		go checkHost(domain, transport, all)
 	}
 
 	wg.Wait()
